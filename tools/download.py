@@ -2,7 +2,7 @@
 import csv
 import hashlib
 import time
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.robotparser import RobotFileParser
@@ -90,7 +90,8 @@ def write_manifest(filename, url, content):
         writer.writerow({
             "file": filename,
             "source_url": url,
-            "downloaded_on": datetime.now(timezone.utc).isoformat(),
+            "downloaded_on": datetime.now(UTC).isoformat(),
+            
             "bytes": len(content),
             "sha256": hashlib.sha256(content).hexdigest(),
         })
