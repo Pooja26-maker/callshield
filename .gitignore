@@ -8,3 +8,7 @@ logs/
 data/raw/
 *.sqlite
 .DS_Store
+
+data/raw/
+
+
