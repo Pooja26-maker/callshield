@@ -1,63 +1,70 @@
-CallShield
+# Citizen Help Finder (CIT)
 
 ## Problem
-Customers lose phones, find unknown SIMs registered in their name, or get fraud calls, and do not know the official steps. The answers are spread across Sanchar Saathi pages, DoT guidelines and press notes. Shop owners guess.
+
+Customers lose phones, discover unknown SIMs registered in their names, or receive suspected fraud calls, but may not know the official steps to take. Relevant information is spread across government service pages, telecom guidelines, and official notices. Mobile recharge and repair shop owners may struggle to find the correct procedure quickly.
 
 ## Who it is for
-Owner of a mobile recharge and repair shop in Kumbakonam whose customers ask about spam calls, number porting, wrong charges and threats of SIM disconnection
+
+A mobile recharge and repair shop owner in Kumbakonam whose customers ask about spam calls, mobile number porting, incorrect charges, and threats of SIM disconnection.
 
 ## Signature feature
-Step guide: type a situation ('phone stolen in bus') and get the official steps with the exact Sanchar Saathi service to use.
 
-## Hardest problem (my interview story)
-Exact-term hybrid search + re-ranking. Users type exact things like an IMEI, '*#06#', 'Chakshu', 'CEIR' or a complaint number. The system uses BM25 for these exact terms together with vectors and a re-ranker, and is tested on a set of code-heavy questions.
+**Situation-to-steps guidance:** A user enters a situation such as "phone stolen on a bus" and receives a step-by-step guide pointing to the relevant official service, with supporting source references.
+
+The guidance must be grounded in collected official documents. If the sources do not contain enough information, the application should clearly say so rather than inventing instructions.
+
+## Hardest technical problem
+
+**Exact-term hybrid search and re-ranking.**
+
+Users may enter exact identifiers and terms such as an IMEI, `*#06#`, `Chakshu`, `CEIR`, or a complaint number. The planned retrieval approach combines BM25 keyword search with vector search and a re-ranking stage. Evaluation will include code-heavy and exact-term questions to check whether the correct source passages are retrieved.
+
+*Implementation status:* This describes the planned technical approach; retrieval and re-ranking performance still need to be implemented and evaluated.
 
 ## Dataset
 
-# Sample 01: Telecom FAQ
+The initial collection contains 10 HTML documents and 5 PDFs from the official TRAI website. The five PDFs contain 241 pages according to the PDF page-count utility.
 
-Type: Illustrative sample
-Source: Original sample content, not copied from a government website
-Language: English
+- Source URLs and download metadata: `data/manifest.csv`
+- URL list: `urls.txt`
+- Raw downloads: `data/raw/` (excluded from Git)
+- Sample content: `data/sample/`
+- Evaluation questions: `docs/QUESTIONS.md`
 
-Q: Where can a citizen find information about telecom services?
+The current collection focuses on TRAI telecom consumer information, FAQs, consumer protection, and complaint-related regulations. Sanchar Saathi and DoT sources remain additional sources to investigate; do not assume they are already included in the dataset.
 
-A: A citizen can consult official telecom department and regulator websites for service information, consumer guidance, and complaint procedures.
+### Sample files
 
-Q: Should a citizen share an OTP with someone claiming to be a telecom official?
+The files in `data/sample/` are illustrative samples created for this project. They are not copied from government websites and should not be treated as verified official guidance.
 
-A: Do not disclose an OTP to an unverified caller. Verify the request through an official service channel.
+## Evaluation questions
 
+See [`docs/QUESTIONS.md`](docs/QUESTIONS.md) for the questions used to evaluate retrieval quality and evidence-grounded responses.
 
+## Run locally
 
-# Sample 02: Suspicious Call Guidance
+Create and activate a virtual environment, then install the project dependencies.
 
-Type: Illustrative sample
-Source: Original sample content, not copied from a government website
-Language: English
-
-Q: What should someone do after receiving a suspicious call?
-
-A: Avoid sharing personal information, passwords, OTPs, or financial details. Verify claims independently through an official channel.
-
-Q: What information should be recorded when reporting a suspicious call?
-
-A: Record relevant details such as the date, time, and caller information where appropriate. Avoid publishing another person's private information.
-
-
-
-
-## 10 real questions
-See [docs/QUESTIONS.md](docs/QUESTIONS.md).
-
-## Run it
 ```bash
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements-dev.txt
-cp .env.example .env                                 # Windows: copy .env.example .env
+python -m venv .venv
+```
+
+Windows PowerShell:
+
+```powershell
+.venv\Scripts\Activate.ps1
+python -m pip install -r requirements-dev.txt
+Copy-Item .env.example .env
 uvicorn app.main:app --reload
-curl localhost:8000/health
+```
+
+Check the health endpoint:
+
+```text
+http://localhost:8000/health
 ```
 
 ## Live link
-<Added in Week 2>
+
+Planned for Week 2.
