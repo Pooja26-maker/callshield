@@ -10,5 +10,7 @@ data/raw/
 .DS_Store
 
 data/raw/
-
+.env
+.env.*
+!.env.example
 

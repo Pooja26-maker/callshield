@@ -48,12 +48,11 @@ Create and activate a virtual environment, then install the project dependencies
 
 ```bash
 python -m venv .venv
-```
-
+```s
 Windows PowerShell:
 
 ```powershell
-.venv\Scripts\Activate.ps1
+.venv\Scripts\Activate.ps1s
 python -m pip install -r requirements-dev.txt
 Copy-Item .env.example .env
 uvicorn app.main:app --reload
@@ -66,5 +65,4 @@ http://localhost:8000/health
 ```
 
 ## Live link
-
 Planned for Week 2.
