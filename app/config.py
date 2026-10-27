@@ -11,9 +11,14 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "CallShield"
-    environment: str = "local"  # local | ci | production
+    environment: str = "local"
+
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.5-flash"
+    gemini_model: str = "gemini-3.8-flash"
+    gemini_fallback_model: str = "gemini-3.1-flash-lite"
+
+    gemini_timeout_seconds: int = 20
+    gemini_max_retries: int = 2
 
 
 @lru_cache
