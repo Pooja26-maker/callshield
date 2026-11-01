@@ -1,4 +1,3 @@
-
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -20,8 +19,11 @@ class Settings(BaseSettings):
     gemini_timeout_seconds: int = 20
     gemini_max_retries: int = 2
 
+    usage_log_path: str = "logs/usage.jsonl"
+    input_price_per_million: float | None = None
+    output_price_per_million: float | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

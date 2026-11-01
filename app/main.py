@@ -1,4 +1,5 @@
 
+
 import json
 import logging
 import time
@@ -11,6 +12,7 @@ from google.genai import types
 from pydantic import BaseModel, Field
 
 from app.config import Settings, get_settings
+from app.usage import get_usage_summary, log_usage
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -103,7 +105,30 @@ def generate_json(
                 if not response.text:
                     raise ValueError("Gemini returned an empty response.")
 
-                return ChatResponse.model_validate_json(response.text)
+                chat_response = ChatResponse.model_validate_json(response.text)
+
+                usage = response.usage_metadata
+
+                log_usage(
+                    log_path=settings.usage_log_path,
+                    model=model,
+                    prompt_tokens=getattr(
+                        usage, "prompt_token_count", None
+                    ),
+                    candidate_tokens=getattr(
+                        usage, "candidates_token_count", None
+                    ),
+                    total_tokens=getattr(
+                        usage, "total_token_count", None
+                    ),
+                    input_price_per_million=settings.input_price_per_million,
+                    output_price_per_million=settings.output_price_per_million,
+                )
+
+                return chat_response
+
+            except HTTPException:
+                raise
 
             except Exception as exc:
                 last_error = exc
@@ -135,6 +160,12 @@ def health(settings: SettingsDep) -> dict:
         "app": settings.app_name,
         "environment": settings.environment,
     }
+
+
+@app.get("/usage")
+def usage(settings: SettingsDep) -> dict:
+    """Return accumulated AI usage statistics."""
+    return get_usage_summary(settings.usage_log_path)
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -230,5 +261,3 @@ def chat_stream(
             "X-Accel-Buffering": "no",
         },
     )
-
-

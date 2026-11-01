@@ -1,0 +1,41 @@
+services:
+  api:
+    build: .
+    container_name: callshield-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      USAGE_LOG_PATH: /app/logs/usage.jsonl
+    volumes:
+      - callshield_logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: callshield-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-callshield}
+      POSTGRES_USER: ${POSTGRES_USER:-callshield}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-callshield_local_password}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/init/01-enable-vector.sql:/docker-entrypoint-initdb.d/01-enable-vector.sql:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${POSTGRES_USER:-callshield} -d ${POSTGRES_DB:-callshield}
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  callshield_logs:

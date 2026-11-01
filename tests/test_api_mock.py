@@ -1,10 +1,10 @@
-
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
 import app.main as main
 from app.config import Settings, get_settings
+from app.usage import get_usage_summary, log_usage
 
 
 def test_health_endpoint():
@@ -98,3 +98,26 @@ def test_stream_endpoint_with_mock(monkeypatch):
         assert "event: done" in response.text
     finally:
         main.app.dependency_overrides.clear()
+
+def test_usage_logging_and_cost_calculation(tmp_path):
+    log_file = tmp_path / "usage.jsonl"
+
+    log_usage(
+        log_path=str(log_file),
+        model="test-model",
+        prompt_tokens=1000,
+        candidate_tokens=500,
+        total_tokens=1500,
+        input_price_per_million=0.5,
+        output_price_per_million=1.0,
+    )
+
+    summary = get_usage_summary(str(log_file))
+
+    assert summary["request_count"] == 1
+    assert summary["usage_available_request_count"] == 1
+    assert summary["total_prompt_tokens"] == 1000
+    assert summary["total_candidate_tokens"] == 500
+    assert summary["total_tokens"] == 1500
+    assert summary["estimated_cost_usd"] == 0.001
+    assert summary["cost_available"] is True
