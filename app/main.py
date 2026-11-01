@@ -1,3 +1,4 @@
+
 import json
 import logging
 import time
@@ -11,7 +12,11 @@ from pydantic import BaseModel, Field
 from app.config import Settings, get_settings
 from app.usage import get_usage_summary, log_usage
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s:%(name)s:%(message)s",
+)
+
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="CallShield", version="0.3.0")
@@ -51,6 +56,7 @@ Return valid JSON only when JSON output is requested.
 
 
 def create_client(settings: Settings) -> Groq:
+    """Create a Groq client using application settings."""
     return Groq(
         api_key=settings.groq_api_key,
         timeout=settings.groq_timeout_seconds,
@@ -75,11 +81,28 @@ def retry_delay(attempt: int) -> None:
     time.sleep(min(2**attempt, 4))
 
 
+def log_groq_error(
+    model: str,
+    attempt: int,
+    exc: Exception,
+) -> None:
+    """Log detailed error information without logging credentials."""
+    logger.warning(
+        "Groq model %s attempt %s failed: %s - %s",
+        model,
+        attempt + 1,
+        type(exc).__name__,
+        str(exc),
+        exc_info=True,
+    )
+
+
 def generate_json(
     request: ChatRequest,
     settings: Settings,
 ) -> ChatResponse:
     """Generate a validated JSON response with retries and model fallback."""
+
     if not settings.groq_api_key:
         raise HTTPException(
             status_code=503,
@@ -90,7 +113,10 @@ def generate_json(
     last_error: Exception | None = None
 
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {
+            "role": "system",
+            "content": SYSTEM_PROMPT,
+        },
         {
             "role": "user",
             "content": f"Citizen's situation:\n{request.message}",
@@ -126,23 +152,30 @@ def generate_json(
                     log_path=settings.usage_log_path,
                     model=model,
                     prompt_tokens=getattr(usage, "prompt_tokens", None),
-                    candidate_tokens=getattr(usage, "completion_tokens", None),
+                    candidate_tokens=getattr(
+                        usage,
+                        "completion_tokens",
+                        None,
+                    ),
                     total_tokens=getattr(usage, "total_tokens", None),
-                    input_price_per_million=settings.input_price_per_million,
-                    output_price_per_million=settings.output_price_per_million,
+                    input_price_per_million=(
+                        settings.input_price_per_million
+                    ),
+                    output_price_per_million=(
+                        settings.output_price_per_million
+                    ),
+                )
+
+                logger.info(
+                    "Groq response generated successfully using %s",
+                    model,
                 )
 
                 return chat_response
 
             except Exception as exc:
                 last_error = exc
-
-                logger.warning(
-                    "Groq model %s attempt %s failed: %s",
-                    model,
-                    attempt + 1,
-                    type(exc).__name__,
-                )
+                log_groq_error(model, attempt, exc)
 
                 if attempt < settings.groq_max_retries:
                     retry_delay(attempt)
@@ -151,12 +184,16 @@ def generate_json(
 
     raise HTTPException(
         status_code=502,
-        detail="Groq could not generate a response using the configured models.",
+        detail=(
+            "Groq could not generate a response "
+            "using the configured models."
+        ),
     ) from last_error
 
 
 @app.get("/health")
 def health(settings: SettingsDep) -> dict:
+    """Check application health."""
     return {
         "status": "ok",
         "app": settings.app_name,
@@ -184,7 +221,8 @@ def chat_stream(
     request: ChatRequest,
     settings: SettingsDep,
 ) -> StreamingResponse:
-    """Stream generated text using Server-Sent Events (SSE)."""
+    """Stream generated text using Server-Sent Events."""
+
     if not settings.groq_api_key:
         raise HTTPException(
             status_code=503,
@@ -212,8 +250,14 @@ def chat_stream(
             for attempt in range(settings.groq_max_retries + 1):
                 try:
                     # Buffer the complete attempt before emitting tokens.
-                    # This allows safe retries without duplicate output.
+                    # This avoids duplicate output if a retry is required.
                     chunks: list[str] = []
+
+                    logger.info(
+                        "Starting Groq streaming with %s, attempt %s",
+                        model,
+                        attempt + 1,
+                    )
 
                     stream = client.chat.completions.create(
                         model=model,
@@ -236,23 +280,23 @@ def chat_stream(
                             "Groq returned an empty streaming response."
                         )
 
-                    # Emit only after the attempt completes successfully.
+                    # Emit only after the complete attempt succeeds.
                     for token in chunks:
                         yield (
                             "event: token\n"
                             f"data: {json.dumps(token)}\n\n"
                         )
 
+                    logger.info(
+                        "Groq streaming completed successfully using %s",
+                        model,
+                    )
+
                     yield "event: done\ndata: {}\n\n"
                     return
 
                 except Exception as exc:
-                    logger.warning(
-                        "Groq streaming model %s attempt %s failed: %s",
-                        model,
-                        attempt + 1,
-                        type(exc).__name__,
-                    )
+                    log_groq_error(model, attempt, exc)
 
                     if attempt < settings.groq_max_retries:
                         retry_delay(attempt)
@@ -264,7 +308,9 @@ def chat_stream(
             + "data: "
             + json.dumps(
                 {
-                    "message": "Streaming failed for the configured models."
+                    "message": (
+                        "Streaming failed for the configured models."
+                    )
                 }
             )
             + "\n\n"
