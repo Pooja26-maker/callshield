@@ -18,7 +18,7 @@ def test_health_endpoint():
 
 def test_chat_endpoint_with_mock(monkeypatch):
     settings = Settings(
-        gemini_api_key="test-key",
+        groq_api_key="test-key",
         app_name="CallShield",
     )
     main.app.dependency_overrides[get_settings] = lambda: settings
@@ -67,22 +67,49 @@ def test_chat_rejects_empty_message():
     assert response.status_code == 422
 
 
+
 def test_stream_endpoint_with_mock(monkeypatch):
     settings = Settings(
-        gemini_api_key="test-key",
+        groq_api_key="test-key",
         app_name="CallShield",
     )
     main.app.dependency_overrides[get_settings] = lambda: settings
 
-    class FakeModels:
-        def generate_content_stream(self, **kwargs):
-            yield SimpleNamespace(text="Never share your OTP.")
-            yield SimpleNamespace(text=" Report suspicious calls.")
+    class FakeCompletions:
+        def create(self, **kwargs):
+            assert kwargs["stream"] is True
+
+            yield SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(
+                            content="Never share your OTP."
+                        )
+                    )
+                ]
+            )
+
+            yield SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(
+                            content=" Report suspicious calls."
+                        )
+                    )
+                ]
+            )
+
+    class FakeChat:
+        completions = FakeCompletions()
 
     class FakeClient:
-        models = FakeModels()
+        chat = FakeChat()
 
-    monkeypatch.setattr(main, "create_client", lambda settings: FakeClient())
+    monkeypatch.setattr(
+        main,
+        "create_client",
+        lambda settings: FakeClient(),
+    )
 
     try:
         client = TestClient(main.app)
@@ -92,12 +119,17 @@ def test_stream_endpoint_with_mock(monkeypatch):
         )
 
         assert response.status_code == 200
-        assert response.headers["content-type"].startswith("text/event-stream")
+        assert response.headers["content-type"].startswith(
+            "text/event-stream"
+        )
         assert "event: token" in response.text
         assert "Never share your OTP." in response.text
+        assert "Report suspicious calls." in response.text
         assert "event: done" in response.text
+
     finally:
         main.app.dependency_overrides.clear()
+
 
 def test_usage_logging_and_cost_calculation(tmp_path):
     log_file = tmp_path / "usage.jsonl"

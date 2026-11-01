@@ -12,12 +12,12 @@ class Settings(BaseSettings):
     app_name: str = "CallShield"
     environment: str = "local"
 
-    gemini_api_key: str = ""
-    gemini_model: str = "gemini-3.8-flash"
-    gemini_fallback_model: str = "gemini-3.1-flash-lite"
+    groq_api_key: str = ""
+    groq_model: str = "openai/gpt-oss-20b"
+    groq_fallback_model: str = "openai/gpt-oss-120b"
 
-    gemini_timeout_seconds: int = 20
-    gemini_max_retries: int = 2
+    groq_timeout_seconds: int = 20
+    groq_max_retries: int = 2
 
     usage_log_path: str = "logs/usage.jsonl"
     input_price_per_million: float | None = None

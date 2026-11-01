@@ -1,5 +1,3 @@
-
-
 import json
 import logging
 import time
@@ -7,8 +5,7 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
-from google import genai
-from google.genai import types
+from groq import Groq
 from pydantic import BaseModel, Field
 
 from app.config import Settings, get_settings
@@ -35,20 +32,29 @@ class ChatResponse(BaseModel):
 
 SYSTEM_PROMPT = """
 You are CallShield, an AI assistant for telecom-related citizen guidance.
+
 Give practical steps in simple language.
 Do not invent official links, phone numbers, rules, or source documents.
 Document retrieval is not implemented, so always return an empty sources list.
+
 Clearly say that answers are AI-generated and not yet verified against
 CallShield's document collection.
+
+For JSON responses, return exactly these four fields:
+- answer: a string
+- steps: a list of strings
+- sources: an empty list
+- disclaimer: a string
+
+Return valid JSON only when JSON output is requested.
 """
 
 
-def create_client(settings: Settings) -> genai.Client:
-    return genai.Client(
-        api_key=settings.gemini_api_key,
-        http_options=types.HttpOptions(
-            timeout=settings.gemini_timeout_seconds * 1000,
-        ),
+def create_client(settings: Settings) -> Groq:
+    return Groq(
+        api_key=settings.groq_api_key,
+        timeout=settings.groq_timeout_seconds,
+        max_retries=0,
     )
 
 
@@ -57,8 +63,8 @@ def model_order(settings: Settings) -> list[str]:
     return list(
         dict.fromkeys(
             [
-                settings.gemini_model,
-                settings.gemini_fallback_model,
+                settings.groq_model,
+                settings.groq_fallback_model,
             ]
         )
     )
@@ -74,82 +80,78 @@ def generate_json(
     settings: Settings,
 ) -> ChatResponse:
     """Generate a validated JSON response with retries and model fallback."""
-    if not settings.gemini_api_key:
+    if not settings.groq_api_key:
         raise HTTPException(
             status_code=503,
-            detail="Gemini API key is not configured.",
+            detail="Groq API key is not configured.",
         )
 
     client = create_client(settings)
-    prompt = f"{SYSTEM_PROMPT}\n\nCitizen's situation:\n{request.message}"
     last_error: Exception | None = None
 
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": f"Citizen's situation:\n{request.message}",
+        },
+    ]
+
     for model in model_order(settings):
-        for attempt in range(settings.gemini_max_retries + 1):
+        for attempt in range(settings.groq_max_retries + 1):
             try:
                 logger.info(
-                    "Trying model %s, attempt %s",
+                    "Trying Groq model %s, attempt %s",
                     model,
                     attempt + 1,
                 )
 
-                response = client.models.generate_content(
+                response = client.chat.completions.create(
                     model=model,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        response_schema=ChatResponse,
-                    ),
+                    messages=messages,
+                    response_format={"type": "json_object"},
+                    temperature=0.2,
                 )
 
-                if not response.text:
-                    raise ValueError("Gemini returned an empty response.")
+                content = response.choices[0].message.content
 
-                chat_response = ChatResponse.model_validate_json(response.text)
+                if not content:
+                    raise ValueError("Groq returned an empty response.")
 
-                usage = response.usage_metadata
+                chat_response = ChatResponse.model_validate_json(content)
+
+                usage = response.usage
 
                 log_usage(
                     log_path=settings.usage_log_path,
                     model=model,
-                    prompt_tokens=getattr(
-                        usage, "prompt_token_count", None
-                    ),
-                    candidate_tokens=getattr(
-                        usage, "candidates_token_count", None
-                    ),
-                    total_tokens=getattr(
-                        usage, "total_token_count", None
-                    ),
+                    prompt_tokens=getattr(usage, "prompt_tokens", None),
+                    candidate_tokens=getattr(usage, "completion_tokens", None),
+                    total_tokens=getattr(usage, "total_tokens", None),
                     input_price_per_million=settings.input_price_per_million,
                     output_price_per_million=settings.output_price_per_million,
                 )
 
                 return chat_response
 
-            except HTTPException:
-                raise
-
             except Exception as exc:
                 last_error = exc
+
                 logger.warning(
-                    "Model %s attempt %s failed: %s",
+                    "Groq model %s attempt %s failed: %s",
                     model,
                     attempt + 1,
                     type(exc).__name__,
                 )
 
-                if attempt < settings.gemini_max_retries:
+                if attempt < settings.groq_max_retries:
                     retry_delay(attempt)
 
-    logger.error("All configured Gemini models failed.")
+    logger.error("All configured Groq models failed.")
 
     raise HTTPException(
         status_code=502,
-        detail=(
-            "Gemini could not generate a response using "
-            "the configured models."
-        ),
+        detail="Groq could not generate a response using the configured models.",
     ) from last_error
 
 
@@ -173,7 +175,7 @@ def chat(
     request: ChatRequest,
     settings: SettingsDep,
 ) -> ChatResponse:
-    """Return structured JSON generated by Gemini."""
+    """Return structured JSON generated by Groq."""
     return generate_json(request, settings)
 
 
@@ -183,38 +185,55 @@ def chat_stream(
     settings: SettingsDep,
 ) -> StreamingResponse:
     """Stream generated text using Server-Sent Events (SSE)."""
-    if not settings.gemini_api_key:
+    if not settings.groq_api_key:
         raise HTTPException(
             status_code=503,
-            detail="Gemini API key is not configured.",
+            detail="Groq API key is not configured.",
         )
 
-    prompt = (
-        SYSTEM_PROMPT
-        + "\nReturn plain text for this streaming endpoint, not JSON.\n\n"
-        + f"Citizen's situation:\n{request.message}"
-    )
+    prompt_messages = [
+        {
+            "role": "system",
+            "content": (
+                SYSTEM_PROMPT
+                + "\nReturn plain text for this streaming endpoint, not JSON."
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"Citizen's situation:\n{request.message}",
+        },
+    ]
 
     def event_stream():
         client = create_client(settings)
 
         for model in model_order(settings):
-            for attempt in range(settings.gemini_max_retries + 1):
+            for attempt in range(settings.groq_max_retries + 1):
                 try:
-                    # Buffer the complete attempt before emitting any tokens.
-                    # This permits a safe retry without duplicate partial output.
+                    # Buffer the complete attempt before emitting tokens.
+                    # This allows safe retries without duplicate output.
                     chunks: list[str] = []
 
-                    for chunk in client.models.generate_content_stream(
+                    stream = client.chat.completions.create(
                         model=model,
-                        contents=prompt,
-                    ):
-                        if chunk.text:
-                            chunks.append(chunk.text)
+                        messages=prompt_messages,
+                        stream=True,
+                        temperature=0.2,
+                    )
+
+                    for chunk in stream:
+                        if not chunk.choices:
+                            continue
+
+                        content = chunk.choices[0].delta.content
+
+                        if content:
+                            chunks.append(content)
 
                     if not chunks:
                         raise ValueError(
-                            "Gemini returned an empty streaming response."
+                            "Groq returned an empty streaming response."
                         )
 
                     # Emit only after the attempt completes successfully.
@@ -229,25 +248,23 @@ def chat_stream(
 
                 except Exception as exc:
                     logger.warning(
-                        "Streaming model %s attempt %s failed: %s",
+                        "Groq streaming model %s attempt %s failed: %s",
                         model,
                         attempt + 1,
                         type(exc).__name__,
                     )
 
-                    if attempt < settings.gemini_max_retries:
+                    if attempt < settings.groq_max_retries:
                         retry_delay(attempt)
 
-        logger.error("All configured Gemini streaming attempts failed.")
+        logger.error("All configured Groq streaming attempts failed.")
 
         yield (
             "event: error\n"
             + "data: "
             + json.dumps(
                 {
-                    "message": (
-                        "Streaming failed for the configured models."
-                    )
+                    "message": "Streaming failed for the configured models."
                 }
             )
             + "\n\n"
