@@ -3,3 +3,5 @@ uvicorn[standard]>=0.30
 pydantic-settings>=2.4
 pypdf>=5.0
 groq>=0.31.0
+sentence-transformers>=3.0.0
+psycopg[binary]>=3.2.0
