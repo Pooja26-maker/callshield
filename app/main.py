@@ -12,51 +12,58 @@ from pydantic import BaseModel, Field
 from app.config import Settings, get_settings
 from app.usage import get_usage_summary, log_usage
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s:%(name)s:%(message)s",
-)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("callshield")
 
-logger = logging.getLogger(__name__)
-
-app = FastAPI(title="CallShield", version="0.3.0")
-
-SettingsDep = Annotated[Settings, Depends(get_settings)]
+app = FastAPI(title="CallShield", version="1.0.0")
 
 
 class ChatRequest(BaseModel):
-    message: str = Field(min_length=1, max_length=4000)
+    message: str = Field(..., min_length=1, max_length=4000)
 
 
 class ChatResponse(BaseModel):
     answer: str
-    steps: list[str]
-    sources: list[str]
-    disclaimer: str
+    steps: list[str] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=list)
+    disclaimer: str = (
+        "This response is AI-generated and should be verified "
+        "against official telecom sources."
+    )
 
 
 SYSTEM_PROMPT = """
-You are CallShield, an AI assistant for telecom-related citizen guidance.
+You are CallShield, an assistant that helps users understand
+telecom-related safety issues in India.
 
-Give practical steps in simple language.
-Do not invent official links, phone numbers, rules, or source documents.
-Document retrieval is not implemented, so always return an empty sources list.
+Help users with:
+- Lost or stolen mobile phones
+- Suspicious or fraudulent phone calls
+- Unknown SIM cards registered in their name
+- Reporting telecom fraud
+- Understanding official telecom complaint procedures
 
-Clearly say that answers are AI-generated and not yet verified against
-CallShield's document collection.
+Give clear, practical, step-by-step guidance.
+Prefer official Indian government and telecom resources.
+Never invent government procedures, contact numbers, or URLs.
 
-For JSON responses, return exactly these four fields:
-- answer: a string
-- steps: a list of strings
-- sources: an empty list
-- disclaimer: a string
-
-Return valid JSON only when JSON output is requested.
+Return ONLY valid JSON in this structure:
+{
+    "answer": "A clear explanation",
+    "steps": ["Step 1", "Step 2"],
+    "sources": ["Official source name or URL"],
+    "disclaimer": "A suitable disclaimer"
+}
 """
 
 
 def create_client(settings: Settings) -> Groq:
-    """Create a Groq client using application settings."""
+    if not settings.groq_api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Groq API key is not configured.",
+        )
+
     return Groq(
         api_key=settings.groq_api_key,
         timeout=settings.groq_timeout_seconds,
@@ -65,19 +72,14 @@ def create_client(settings: Settings) -> Groq:
 
 
 def model_order(settings: Settings) -> list[str]:
-    """Return primary and fallback models without duplicates."""
-    return list(
-        dict.fromkeys(
-            [
-                settings.groq_model,
-                settings.groq_fallback_model,
-            ]
-        )
-    )
+    models = [
+        settings.groq_model,
+        settings.groq_fallback_model,
+    ]
+    return list(dict.fromkeys(model for model in models if model))
 
 
 def retry_delay(attempt: int) -> None:
-    """Apply a short, capped delay before another attempt."""
     time.sleep(min(2**attempt, 4))
 
 
@@ -86,8 +88,9 @@ def log_groq_error(
     attempt: int,
     exc: Exception,
 ) -> None:
-    """Log detailed error information without logging credentials."""
-    logger.warning(
+    """Log the Groq error and its underlying transport exception."""
+
+    logger.error(
         "Groq model %s attempt %s failed: %s - %s",
         model,
         attempt + 1,
@@ -96,32 +99,54 @@ def log_groq_error(
         exc_info=True,
     )
 
+    cause = exc.__cause__ or exc.__context__
+
+    while cause is not None:
+        logger.error(
+            "Underlying exception: %s - %r",
+            type(cause).__name__,
+            cause,
+        )
+        cause = cause.__cause__ or cause.__context__
+
+
+def record_usage(
+    settings: Settings,
+    model: str,
+    usage,
+) -> None:
+    """Save token usage using the project's usage ledger."""
+
+    log_usage(
+        log_path=settings.usage_log_path,
+        model=model,
+        prompt_tokens=getattr(usage, "prompt_tokens", None),
+        candidate_tokens=getattr(usage, "completion_tokens", None),
+        total_tokens=getattr(usage, "total_tokens", None),
+        input_price_per_million=settings.input_price_per_million,
+        output_price_per_million=settings.output_price_per_million,
+    )
+
+
+def parse_response(content: str) -> ChatResponse:
+    try:
+        data = json.loads(content)
+        return ChatResponse(**data)
+
+    except (json.JSONDecodeError, ValueError, TypeError) as exc:
+        logger.exception("Failed to parse Groq response as JSON.")
+        raise HTTPException(
+            status_code=502,
+            detail="The AI provider returned an invalid response.",
+        ) from exc
+
 
 def generate_json(
-    request: ChatRequest,
+    message: str,
     settings: Settings,
 ) -> ChatResponse:
-    """Generate a validated JSON response with retries and model fallback."""
-
-    if not settings.groq_api_key:
-        raise HTTPException(
-            status_code=503,
-            detail="Groq API key is not configured.",
-        )
-
     client = create_client(settings)
     last_error: Exception | None = None
-
-    messages = [
-        {
-            "role": "system",
-            "content": SYSTEM_PROMPT,
-        },
-        {
-            "role": "user",
-            "content": f"Citizen's situation:\n{request.message}",
-        },
-    ]
 
     for model in model_order(settings):
         for attempt in range(settings.groq_max_retries + 1):
@@ -132,46 +157,26 @@ def generate_json(
                     attempt + 1,
                 )
 
-                response = client.chat.completions.create(
+                completion = client.chat.completions.create(
                     model=model,
-                    messages=messages,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": message},
+                    ],
                     response_format={"type": "json_object"},
-                    temperature=0.2,
                 )
 
-                content = response.choices[0].message.content
+                record_usage(settings, model, completion.usage)
+
+                content = completion.choices[0].message.content
 
                 if not content:
                     raise ValueError("Groq returned an empty response.")
 
-                chat_response = ChatResponse.model_validate_json(content)
+                return parse_response(content)
 
-                usage = response.usage
-
-                log_usage(
-                    log_path=settings.usage_log_path,
-                    model=model,
-                    prompt_tokens=getattr(usage, "prompt_tokens", None),
-                    candidate_tokens=getattr(
-                        usage,
-                        "completion_tokens",
-                        None,
-                    ),
-                    total_tokens=getattr(usage, "total_tokens", None),
-                    input_price_per_million=(
-                        settings.input_price_per_million
-                    ),
-                    output_price_per_million=(
-                        settings.output_price_per_million
-                    ),
-                )
-
-                logger.info(
-                    "Groq response generated successfully using %s",
-                    model,
-                )
-
-                return chat_response
+            except HTTPException:
+                raise
 
             except Exception as exc:
                 last_error = exc
@@ -184,16 +189,14 @@ def generate_json(
 
     raise HTTPException(
         status_code=502,
-        detail=(
-            "Groq could not generate a response "
-            "using the configured models."
-        ),
+        detail="Unable to generate a response using the configured AI models.",
     ) from last_error
 
 
 @app.get("/health")
-def health(settings: SettingsDep) -> dict:
-    """Check application health."""
+def health(
+    settings: Annotated[Settings, Depends(get_settings)],
+):
     return {
         "status": "ok",
         "app": settings.app_name,
@@ -202,125 +205,103 @@ def health(settings: SettingsDep) -> dict:
 
 
 @app.get("/usage")
-def usage(settings: SettingsDep) -> dict:
-    """Return accumulated AI usage statistics."""
+def usage(
+    settings: Annotated[Settings, Depends(get_settings)],
+):
     return get_usage_summary(settings.usage_log_path)
 
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(
     request: ChatRequest,
-    settings: SettingsDep,
-) -> ChatResponse:
-    """Return structured JSON generated by Groq."""
-    return generate_json(request, settings)
+    settings: Annotated[Settings, Depends(get_settings)],
+):
+    return generate_json(request.message, settings)
 
 
 @app.post("/chat/stream")
 def chat_stream(
     request: ChatRequest,
-    settings: SettingsDep,
-) -> StreamingResponse:
-    """Stream generated text using Server-Sent Events."""
+    settings: Annotated[Settings, Depends(get_settings)],
+):
+    client = create_client(settings)
 
-    if not settings.groq_api_key:
-        raise HTTPException(
-            status_code=503,
-            detail="Groq API key is not configured.",
-        )
-
-    prompt_messages = [
-        {
-            "role": "system",
-            "content": (
-                SYSTEM_PROMPT
-                + "\nReturn plain text for this streaming endpoint, not JSON."
-            ),
-        },
-        {
-            "role": "user",
-            "content": f"Citizen's situation:\n{request.message}",
-        },
-    ]
-
-    def event_stream():
-        client = create_client(settings)
-
+    def event_generator():
         for model in model_order(settings):
             for attempt in range(settings.groq_max_retries + 1):
-                try:
-                    # Buffer the complete attempt before emitting tokens.
-                    # This avoids duplicate output if a retry is required.
-                    chunks: list[str] = []
+                received_token = False
 
+                try:
                     logger.info(
-                        "Starting Groq streaming with %s, attempt %s",
+                        "Streaming with Groq model %s, attempt %s",
                         model,
                         attempt + 1,
                     )
 
                     stream = client.chat.completions.create(
                         model=model,
-                        messages=prompt_messages,
+                        messages=[
+                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user", "content": request.message},
+                        ],
+                        response_format={"type": "json_object"},
                         stream=True,
-                        temperature=0.2,
+                        
                     )
+
+
+
+
+
+
+                    usage_data = None
 
                     for chunk in stream:
-                        if not chunk.choices:
-                            continue
+                        if getattr(chunk, "usage", None) is not None:
+                            usage_data = chunk.usage
 
-                        content = chunk.choices[0].delta.content
+                        for choice in getattr(chunk, "choices", []) or []:
+                            token = getattr(
+                                getattr(choice, "delta", None),
+                                "content",
+                                None,
+                            )
 
-                        if content:
-                            chunks.append(content)
+                            if token:
+                                received_token = True
+                                yield (
+                                    "event: token\n"
+                                    f"data: {json.dumps(token)}\n\n"
+                                )
 
-                    if not chunks:
-                        raise ValueError(
-                            "Groq returned an empty streaming response."
-                        )
+                    record_usage(settings, model, usage_data)
 
-                    # Emit only after the complete attempt succeeds.
-                    for token in chunks:
-                        yield (
-                            "event: token\n"
-                            f"data: {json.dumps(token)}\n\n"
-                        )
-
-                    logger.info(
-                        "Groq streaming completed successfully using %s",
-                        model,
-                    )
-
-                    yield "event: done\ndata: {}\n\n"
+                    yield "event: done\ndata: [DONE]\n\n"
                     return
 
                 except Exception as exc:
                     log_groq_error(model, attempt, exc)
 
+                    if received_token:
+                        yield (
+                            "event: error\n"
+                            f"data: {json.dumps('Streaming interrupted.')}\n\n"
+                        )
+                        return
+
                     if attempt < settings.groq_max_retries:
                         retry_delay(attempt)
 
-        logger.error("All configured Groq streaming attempts failed.")
+        logger.error("All configured Groq models failed during streaming.")
 
         yield (
             "event: error\n"
-            + "data: "
-            + json.dumps(
-                {
-                    "message": (
-                        "Streaming failed for the configured models."
-                    )
-                }
-            )
-            + "\n\n"
+            f"data: {json.dumps('Unable to generate a response using the configured AI models.')}\n\n"
         )
 
     return StreamingResponse(
-        event_stream(),
+        event_generator(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
     )
+
+
