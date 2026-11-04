@@ -110,6 +110,11 @@ def test_stream_endpoint_with_mock(monkeypatch):
         "create_client",
         lambda settings: FakeClient(),
     )
+    monkeypatch.setattr(
+    main,
+    "retrieve_context",
+    lambda message: "Mock retrieved official document context.",
+)
 
     try:
         client = TestClient(main.app)
