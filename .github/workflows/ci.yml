@@ -1,13 +1,47 @@
-name: CI
+﻿name: CI
+
 on: [push, pull_request]
+
 jobs:
   test:
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: callshield
+          POSTGRES_USER: callshield
+          POSTGRES_PASSWORD: callshield_test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U callshield -d callshield"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: callshield
+      POSTGRES_USER: callshield
+      POSTGRES_PASSWORD: callshield_test_password
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -r requirements-dev.txt
-      - run: ruff check .
-      - run: pytest -q
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run Ruff
+        run: ruff check .
+
+      - name: Run tests
+        run: pytest -q
